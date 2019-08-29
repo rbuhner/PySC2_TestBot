@@ -1,12 +1,11 @@
 import sc2
 from sc2 import run_game, maps, Race, Difficulty
-from sc2.player import Bot, Computer
+from sc2.player import Bot, Computer, Human
 from sc2.constants import NEXUS, PROBE, PYLON, ASSIMILATOR, GATEWAY, \
   CYBERNETICSCORE, FORGE, STALKER
 from sc2.ids.upgrade_id import UpgradeId
 import random
 
-#roughly 165 iterations per minute?
 class TestBot(sc2.BotAI):
   def __init__(self):
       self.CALL_ONCE=True
@@ -73,7 +72,7 @@ class TestBot(sc2.BotAI):
 
   async def upgrade(self):
       if self.units(FORGE).ready.exists and self.units(FORGE).ready.idle:
-          forge=self.units(FORGE).ready.first
+          forge=self.units(FORGE).idle.first
           if not self.already_pending_upgrade(UpgradeId.PROTOSSSHIELDSLEVEL1) and self.can_afford(UpgradeId.PROTOSSSHIELDSLEVEL1):
               await self.do(forge.research(UpgradeId.PROTOSSSHIELDSLEVEL1))
           elif not self.already_pending_upgrade(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1) and self.can_afford(UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1):
@@ -94,9 +93,10 @@ class TestBot(sc2.BotAI):
               await self.do(forge.research(UpgradeId.PROTOSSGROUNDARMORSLEVEL3))
 
   async def build_offense_units(self):
-      for gate in self.units(GATEWAY).ready.idle:
-          if self.can_afford(STALKER) and self.supply_left>0:
-              await self.do(gate.train(STALKER))
+      if self.units(GATEWAY).ready and self.units(CYBERNETICSCORE).ready:
+          for gate in self.units(GATEWAY).ready.idle:
+              if self.can_afford(STALKER) and self.supply_left>0:
+                  await self.do(gate.train(STALKER))
 
   async def defend(self):
       if self.units(STALKER).amount>3 and len(self.known_enemy_units)>0:
@@ -119,6 +119,7 @@ class TestBot(sc2.BotAI):
               await self.do(u.attack(target))
 
 run_game(maps.get("Abyssal Reef LE"), [
-    Bot(Race.Protoss, TestBot()),
+    #Human(Race.Terran,fullscreen=True),
+    Bot(Race.Protoss, TestBot(),fullscreen=False),
     Computer(Race.Terran, Difficulty.Medium)
 ], realtime=True)
