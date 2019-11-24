@@ -16,7 +16,23 @@ import cv2
 import numpy as np
 
 class NTestBot(sc2.BotAI):
-    def __init__(self}):
+    class NUnit():
+        #TODO: Create subclass to wrap any unit/building in a neural wrapper
+        #   exposing the stats and actions to neural I/O
+        def __init__():
+            doSomething=False
+
+        def input():
+            #TODO: This should return a neural input of all unit's
+            #   stats/position/abilities.
+            doSomething=True
+
+        def takeAction(n):
+            #TODO: This should take a nerual action and map it to a unit action,
+            #   like moving, move/attack, or using an ability.
+            doSomething=True
+
+    def __init__(self):
         self.CALL_ONCE=False
 
     async def intel(self):
