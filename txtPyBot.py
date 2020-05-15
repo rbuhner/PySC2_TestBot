@@ -17,7 +17,7 @@ smtp = "smtp.gmail.com" #Gmail smtp
 port = 587
 
 #Contact Setup
-contact = "+19255180463"+carrier["verizon"]
+contact = "TODO put contact number here"+carrier["TODO contact carrier here"]
 
 #Setup of email port/login
 server = smtplib.SMTP(smtp,port)
