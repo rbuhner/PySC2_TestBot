@@ -130,8 +130,13 @@ class TestBot2(sc2.BotAI):
     #               then put both down on the same point?
     async def expand(self):
         if self.units(COMMANDCENTER).amount<(self.time/180) and self.can_afford(COMMANDCENTER):
-            await self.expand_now()
-            self.next_node = await self.get_next_expansion()
+            if self.already_pending(COMMANDCENTER):
+                self.next_node = await self.get_next_expansion()
+                await self.expand_now()
+                self.next_node = await self.get_next_expansion()
+            else:
+                await self.expand_now()
+                self.next_node = await self.get_next_expansion()
 
     # OPTIMIZE: Research and utilize placement towards center to keep ENGINEERINGBAY
     #               out of mineral fields and geyser paths.
@@ -145,9 +150,18 @@ class TestBot2(sc2.BotAI):
                 await self.build(ENGINEERINGBAY, near=self.units(COMMANDCENTER).ready.first)
 
     async def train_offense(self):
-        for hall in self.units(BARRACKS).ready.idle:
-            if self.can_afford(MARINE):
-                await self.do(hall.train(MARINE))
+        if self.units(MARINE).amount<4:
+            for hall in self.units(BARRACKS).ready.idle:
+                if self.can_afford(MARINE):
+                    await self.do(hall.train(MARINE))
+        else:
+            for hall in self.units(BARRACKS).ready.idle:
+                noReactor = await self.can_cast(hall, AbilityId.BUILD_REACTOR_BARRACKS)
+                if noReactor:
+                    await self.do(hall(AbilityId.BUILD_REACTOR_BARRACKS))
+                else:
+                    await self.do(hall.train(MARINE))
+
 
     async def defend(self):
         global defense
@@ -175,11 +189,11 @@ class TestBot2(sc2.BotAI):
 
         if self.units(MARINE).amount>6+(self.time/60):
             target=self.find_enemy(self.state)
-            for unit in defense if unit.idle:
+            for unit in (units for units in defense if units.idle):
                 defense.remove(unit)
                 offense.append(unit)
                 await self.do(unit.attack(target))
-            for unit in offense if unit.idle:
+            for unit in (units for units in offense if units.idle):
                 await self.do(unit.attack(target))
         elif self.units(MARINE).amount<(6+(self.time/60)/2):
             if offense:
