@@ -9,6 +9,7 @@ from sc2.constants import COMMANDCENTER, SUPPLYDEPOT, REFINERY, BARRACKS, \
     MEDIVAC, BATTLECRUISER, PLANETARYFORTRESS, ORBITALCOMMAND, ORBITALCOMMANDFLYING, MULE
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.ids.ability_id import AbilityId
+from sc2.data import Alert
 import random, time
 
 class TestBot2(sc2.BotAI):
@@ -18,6 +19,9 @@ class TestBot2(sc2.BotAI):
         global defense, offense
         defense = []
         offense = []
+
+        global lAddon
+        lAddon = []
 
     async def call_once(self):
         self.next_node = await self.get_next_expansion()
@@ -36,6 +40,7 @@ class TestBot2(sc2.BotAI):
 
         await self.build_offense()
         await self.train_offense()
+        await self.upgrade()
         await self.defend()
         await self.attack()
 
@@ -123,20 +128,17 @@ class TestBot2(sc2.BotAI):
             for townhall in self.units(COMMANDCENTER).ready:
                 for geyser in self.state.vespene_geyser.closer_than(15.0, townhall):
                     worker = self.select_build_worker(geyser.position)
-                    if worker and not self.units(REFINERY).closer_than(1.0, geyser).exists:
+                    if worker and not self.units(REFINERY).closer_than(1.0, geyser).exists and \
+                    self.already_pending(REFINERY)<2:
                         await self.do(worker.build(REFINERY, geyser))
 
     # OPTIMIZE: For some reason waited until it had enough for two comms,
     #               then put both down on the same point?
     async def expand(self):
-        if self.units(COMMANDCENTER).amount<(self.time/180) and self.can_afford(COMMANDCENTER):
-            if self.already_pending(COMMANDCENTER):
-                self.next_node = await self.get_next_expansion()
-                await self.expand_now()
-                self.next_node = await self.get_next_expansion()
-            else:
-                await self.expand_now()
-                self.next_node = await self.get_next_expansion()
+        if self.units(COMMANDCENTER).amount<(self.time/180) and self.can_afford(COMMANDCENTER) and \
+        not self.already_pending(COMMANDCENTER):
+            await self.expand_now()
+            self.next_node = await self.get_next_expansion()
 
     # OPTIMIZE: Research and utilize placement towards center to keep ENGINEERINGBAY
     #               out of mineral fields and geyser paths.
@@ -149,58 +151,81 @@ class TestBot2(sc2.BotAI):
             self.can_afford(ENGINEERINGBAY):
                 await self.build(ENGINEERINGBAY, near=self.units(COMMANDCENTER).ready.first)
 
+    async def build_defense(self):
+        return None
+
     async def train_offense(self):
+        global lAddon
+
+        if self.alert(Alert.AddOnComplete):
+            lAddon.pop(0)
+
         if self.units(MARINE).amount<4:
             for hall in self.units(BARRACKS).ready.idle:
                 if self.can_afford(MARINE):
                     await self.do(hall.train(MARINE))
         else:
-            for hall in self.units(BARRACKS).ready.idle:
-                noReactor = await self.can_cast(hall, AbilityId.BUILD_REACTOR_BARRACKS)
-                if noReactor:
-                    await self.do(hall(AbilityId.BUILD_REACTOR_BARRACKS))
-                else:
+            for hall in self.units(BARRACKS).ready:
+                if hall.add_on_tag == 0 and hall in self.units(BARRACKS).ready.idle:
+                    await self.do(hall.build(BARRACKSREACTOR))
+                    lAddon.append(hall)
+                elif len(hall.orders)<2 and not hall in lAddon:
                     await self.do(hall.train(MARINE))
+
+    async def upgrade(self):
+        for tech in self.units(ENGINEERINGBAY).ready.idle:
+            if not self.already_pending_upgrade(UpgradeId.TERRANINFANTRYARMORSLEVEL1) and \
+            self.can_afford(UpgradeId.TERRANINFANTRYARMORSLEVEL1):
+                await self.do(tech.research(UpgradeId.TERRANINFANTRYARMORSLEVEL1))
+            elif not self.already_pending_upgrade(UpgradeId.TERRANINFANTRYWEAPONSLEVEL1) and \
+            self.can_afford(UpgradeId.TERRANINFANTRYWEAPONSLEVEL1):
+                await self.do(tech.research(UpgradeId.TERRANINFANTRYWEAPONSLEVEL1))
 
 
     async def defend(self):
         global defense
 
         if defense and len(self.known_enemy_units)>0:
-            target = random.choice(self.known_enemy_units)
-            for unit in self.units(MARINE).idle:
+            target = random.choice(self.known_enemy_units).position
+            for unit in (units for units in defense if units in self.units(Marine).ready.idle):
                 await self.do(unit.attack(target))
 
     def find_enemy(self, state):
         if len(self.known_enemy_units)>0:
-            return random.choice(self.known_enemy_units)
+            return random.choice(self.known_enemy_units).position
         elif len(self.known_enemy_structures)>0:
-            return random.choice(self.known_enemy_structures)
+            return random.choice(self.known_enemy_structures).position
         else:
             return self.enemy_start_locations[0]
 
     # OPTIMIZE: Would rather marines kept at top of map_ramps, need further research...
+    # OPTIMIZE: Need rally points and the army to gather at them, current code is flaky at best.
+    # OPTIMIZE: Doing some really janky things with the marines picked to go etc...
     async def attack(self):
-        global defense, offense, next_node
+        global defense, offense
+
+        #Add all new units to defense force first
         for unit in (units for units in self.units(MARINE) if \
         not units in defense and not units in offense):
             defense.append(unit)
             await self.do(unit.move(self.next_node))
 
-        if self.units(MARINE).amount>6+(self.time/60):
+        #If defense force is big enough to attack, attack
+        if len(defense)>6+(self.time/45):
             target=self.find_enemy(self.state)
-            for unit in (units for units in defense if units.idle):
+            for unit in defense:
                 defense.remove(unit)
                 offense.append(unit)
                 await self.do(unit.attack(target))
-            for unit in (units for units in offense if units.idle):
+            for unit in (units for units in offense if self.units(MARINE).ready.idle):
                 await self.do(unit.attack(target))
-        elif self.units(MARINE).amount<(6+(self.time/60)/2):
-            if offense:
-                for unit in offense:
-                    offense.remove(unit)
-                    defense.append(unit)
-                    await self.do(unit.move(self.next_node))
+
+        #Retreat if offense too weak
+        if len(offense)<(6+(self.time/45))/3:
+            for unit in offense:
+                offense.remove(unit)
+                defense.append(unit)
+                await self.do(unit.move(self.next_node))
 
 #--- Run Game ---#
 run_game(maps.get("Abyssal Reef LE"), [
