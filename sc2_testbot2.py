@@ -9,6 +9,7 @@ from sc2.constants import COMMANDCENTER, SUPPLYDEPOT, REFINERY, BARRACKS, \
     MEDIVAC, BATTLECRUISER, PLANETARYFORTRESS, ORBITALCOMMAND, ORBITALCOMMANDFLYING, MULE
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.ids.ability_id import AbilityId
+from sc2.ids.unit_typeid import UnitTypeId
 from sc2.data import Alert
 import random, time
 
@@ -20,8 +21,10 @@ class TestBot2(sc2.BotAI):
         defense = []
         offense = []
 
-        global lAddon
+        global lAddon, halltech, hallreac
         lAddon = []
+        halltech = []
+        hallreac = []
 
     async def call_once(self):
         self.next_node = await self.get_next_expansion()
@@ -140,8 +143,41 @@ class TestBot2(sc2.BotAI):
             await self.expand_now()
             self.next_node = await self.get_next_expansion()
 
-    # OPTIMIZE: Research and utilize placement towards center to keep ENGINEERINGBAY
-    #               out of mineral fields and geyser paths.
+    async def better_placement(self, building: UnitTypeId, near: Union[Unit, Point2, Point3], \
+    max_distance: int=20, random_alternative: bool=True, placement_step: int=2, add_on: bool=False) \
+    -> Optional[Point2]:
+        """An attempt at a placement finder that keeps space for addons."""
+        assert isinstance(building, (AbilityId, UnitTypeId))
+        assert isinstance(near, Point2)
+        if isinstance(building, UnitTypeId):
+            building = self._game_data.units[building.value].creation_ability
+        else: #AbilityId
+            building = self._game_data.abilties[building.value]
+
+        if await self._client.query_building_placement(building, near)[0] == ActionResult.Success:
+            if add_on and await self._client.query_building_placement(BARRACKSTECHLAB, )
+                return near #Normal, need to change
+        if max_distance == 0:
+            return None
+
+        for distance in range(placement_step, max_distance, placement_step):
+            possible_positions = [Point2(p).offset(near).to2 for p in (
+                [(dx, -distance) for dx in range(-distance, distance+1, placement_step)] +
+                [(dx, distance) for dx in range(-distance, distance+1, placement_step)] +
+                [(-distance, dy) for dy in range(-distance, distance+1, placement_step)] +
+                [(distance, dy) for dy in range(-distance, distance+1, placement_step)]
+            )]
+            res = await self._client.query_building_placement(building, possible_positions)
+            possible = [p for r, p in zip(res, possible_positions) if r == ActionResult.Success]
+            if not possible:
+                continue
+
+            if random_alternative:
+                return random.choice(possible)
+            else:
+                return min(possible, key=lambda p: p.distance_to(near))
+        return None
+
     async def build_offense(self):
         if depots:
             if not self.units(BARRACKS).ready:
@@ -149,13 +185,21 @@ class TestBot2(sc2.BotAI):
                     await self.build(BARRACKS, self.main_base_ramp.barracks_correct_placement)
             elif not self.units(ENGINEERINGBAY).ready and not self.already_pending(ENGINEERINGBAY) and \
             self.can_afford(ENGINEERINGBAY):
-                await self.build(ENGINEERINGBAY, near=self.units(COMMANDCENTER).ready.first)
+                await self.build(ENGINEERINGBAY, \
+                near=self.start_location.towards(self.game_info.map_center, distance=5), placement_step=1)
+            elif self.units(BARRACKS).ready.amount<2:
+                if not self.already_pending(BARRACKS) and self.can_afford(BARRACKS):
+                    build_loc = await self.find_placement(UnitTypeId.BARRACKS, \
+                    near=self.main_base_ramp.barracks_correct_placement)
+                    if build_loc:
+                        await self.build(BARRACKS, build_loc)
 
     async def build_defense(self):
         return None
 
     async def train_offense(self):
         global lAddon
+        global halltech, hallreac
 
         if self.alert(Alert.AddOnComplete):
             lAddon.pop(0)
@@ -167,12 +211,22 @@ class TestBot2(sc2.BotAI):
         else:
             for hall in self.units(BARRACKS).ready:
                 if hall.add_on_tag == 0 and hall in self.units(BARRACKS).ready.idle:
-                    await self.do(hall.build(BARRACKSREACTOR))
+                    if len(halltech)<1:
+                        await self.do(hall.build(BARRACKSTECHLAB))
+                        halltech.append(hall)
+                    else:
+                        await self.do(hall.build(BARRACKSREACTOR))
+                        hallreac.append(hall)
                     lAddon.append(hall)
-                elif len(hall.orders)<2 and not hall in lAddon:
-                    await self.do(hall.train(MARINE))
+                elif hall in hallreac:
+                    if len(hall.orders)<2 and not hall in lAddon:
+                        await self.do(hall.train(MARINE))
+                elif hall in halltech:
+                    if len(hall.orders)<1 and not hall in lAddon:
+                        await self.do(hall.train(MARAUDER))
 
     async def upgrade(self):
+        #ENGINEERINGBAY Research queuing
         for tech in self.units(ENGINEERINGBAY).ready.idle:
             if not self.already_pending_upgrade(UpgradeId.TERRANINFANTRYARMORSLEVEL1) and \
             self.can_afford(UpgradeId.TERRANINFANTRYARMORSLEVEL1):
@@ -181,13 +235,21 @@ class TestBot2(sc2.BotAI):
             self.can_afford(UpgradeId.TERRANINFANTRYWEAPONSLEVEL1):
                 await self.do(tech.research(UpgradeId.TERRANINFANTRYWEAPONSLEVEL1))
 
+        #BARRACKSTECHLAB Research queuing
+        for htech in self.units(BARRACKSTECHLAB).ready.idle:
+            if not self.already_pending_upgrade(UpgradeId.COMBATSHIELD) and \
+            self.can_afford(UpgradeId.UpgradeId.COMBATSHIELD):
+                await self.do(htech.research(UpgradeId.COMBATSHIELD))
+            elif not self.already_pending_upgrade(UpgradeId.CONCUSSIVESHELLS) and \
+            self.can_afford(UpgradeId.CONCUSSIVESHELLS):
+                await self.do(htech.research(UpgradeId.CONCUSSIVESHELLS))
 
     async def defend(self):
         global defense
 
         if defense and len(self.known_enemy_units)>0:
             target = random.choice(self.known_enemy_units).position
-            for unit in (units for units in defense if units in self.units(Marine).ready.idle):
+            for unit in (units for units in defense if len(units.orders)<1):
                 await self.do(unit.attack(target))
 
     def find_enemy(self, state):
@@ -205,7 +267,7 @@ class TestBot2(sc2.BotAI):
         global defense, offense
 
         #Add all new units to defense force first
-        for unit in (units for units in self.units(MARINE) if \
+        for unit in (units for units in self.units(MARINE)|self.units(MARAUDER) if \
         not units in defense and not units in offense):
             defense.append(unit)
             await self.do(unit.move(self.next_node))
@@ -217,7 +279,7 @@ class TestBot2(sc2.BotAI):
                 defense.remove(unit)
                 offense.append(unit)
                 await self.do(unit.attack(target))
-            for unit in (units for units in offense if self.units(MARINE).ready.idle):
+            for unit in (units for units in offense if len(units.orders)<1):
                 await self.do(unit.attack(target))
 
         #Retreat if offense too weak
