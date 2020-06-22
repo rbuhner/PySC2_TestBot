@@ -10,8 +10,12 @@ from sc2.constants import COMMANDCENTER, SUPPLYDEPOT, REFINERY, BARRACKS, \
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
-from sc2.data import Alert
+from sc2.data import ActionResult, Alert
+from sc2.position import Point2, Point3
+from sc2.unit import Unit
+
 import random, time
+from typing import Optional, Union # mypy type checking
 
 class TestBot2(sc2.BotAI):
     def __init__(self):
@@ -117,7 +121,7 @@ class TestBot2(sc2.BotAI):
         global depots
         depots = self.units(SUPPLYDEPOT).ready | self.units(SUPPLYDEPOTLOWERED).ready
 
-        if self.supply_left<6 and not self.already_pending(SUPPLYDEPOT):
+        if self.supply_left<6 and not self.already_pending(SUPPLYDEPOT) and (self.supply_used+self.supply_left)<200:
             townhall = self.units(COMMANDCENTER).ready
             if townhall and self.can_afford(SUPPLYDEPOT):
                 await self.build(SUPPLYDEPOT, near=townhall.first)
@@ -154,9 +158,14 @@ class TestBot2(sc2.BotAI):
         else: #AbilityId
             building = self._game_data.abilties[building.value]
 
-        if await self._client.query_building_placement(building, near)[0] == ActionResult.Success:
-            if add_on and await self._client.query_building_placement(BARRACKSTECHLAB, )
-                return near #Normal, need to change
+        ns = await self._client.query_building_placement(building, [near])
+        if ns[0] == ActionResult.Success:
+            if add_on:
+                nsao = await self._client.query_building_placement(BARRACKSTECHLAB, [Point2([2,1]).offset(near).to2])
+                if nsao[0] == ActionResult.Success:
+                    return near
+            else:
+                return near
         if max_distance == 0:
             return None
 
@@ -171,6 +180,16 @@ class TestBot2(sc2.BotAI):
             possible = [p for r, p in zip(res, possible_positions) if r == ActionResult.Success]
             if not possible:
                 continue
+
+            if add_on:
+                possible_aopositions = [Point2(possible).offset(0,0).to2]
+                res = await self._client.query_building_placement( \
+                self._game_data.units[UnitTypeId.BARRACKSTECHLAB.value].creation_ability, possible_aopositions)
+                for pos in possible_aopositions:
+                    print("AdjPos:", pos)
+                adjPossible = [p for r, p in zip(res, possible_aopositions) if r == ActionResult.Success]
+                if not adjPossible:
+                    continue
 
             if random_alternative:
                 return random.choice(possible)
@@ -189,10 +208,19 @@ class TestBot2(sc2.BotAI):
                 near=self.start_location.towards(self.game_info.map_center, distance=5), placement_step=1)
             elif self.units(BARRACKS).ready.amount<2:
                 if not self.already_pending(BARRACKS) and self.can_afford(BARRACKS):
-                    build_loc = await self.find_placement(UnitTypeId.BARRACKS, \
-                    near=self.main_base_ramp.barracks_correct_placement)
-                    if build_loc:
-                        await self.build(BARRACKS, build_loc)
+                    for i in range(1,6):
+                        print("Attempting second barracks placement. ", i, "/5")
+                        build_loc = await self.better_placement(UnitTypeId.BARRACKS, \
+                        near=self.main_base_ramp.barracks_correct_placement, add_on=True)
+                        if build_loc:
+                            await self.build(BARRACKS, build_loc)
+                            break
+                        elif i==5:
+                            print("No placement found for barracks. Resorting to norm placement.")
+                            build_loc = await self.find_placement(BARRACKS, near=self.main_base_ramp.barracks_correct_placement)
+                            print(build_loc)
+                            await self.build(BARRACKS, build_loc)
+
 
     async def build_defense(self):
         return None
@@ -219,10 +247,10 @@ class TestBot2(sc2.BotAI):
                         hallreac.append(hall)
                     lAddon.append(hall)
                 elif hall in hallreac:
-                    if len(hall.orders)<2 and not hall in lAddon:
+                    if len(hall.orders)<2 and not hall in lAddon and self.can_afford(MARINE):
                         await self.do(hall.train(MARINE))
                 elif hall in halltech:
-                    if len(hall.orders)<1 and not hall in lAddon:
+                    if len(hall.orders)<1 and not hall in lAddon and self.can_afford(MARAUDER):
                         await self.do(hall.train(MARAUDER))
 
     async def upgrade(self):
@@ -237,12 +265,13 @@ class TestBot2(sc2.BotAI):
 
         #BARRACKSTECHLAB Research queuing
         for htech in self.units(BARRACKSTECHLAB).ready.idle:
-            if not self.already_pending_upgrade(UpgradeId.COMBATSHIELD) and \
-            self.can_afford(UpgradeId.UpgradeId.COMBATSHIELD):
-                await self.do(htech.research(UpgradeId.COMBATSHIELD))
-            elif not self.already_pending_upgrade(UpgradeId.CONCUSSIVESHELLS) and \
-            self.can_afford(UpgradeId.CONCUSSIVESHELLS):
-                await self.do(htech.research(UpgradeId.CONCUSSIVESHELLS))
+            abilities = await self.get_available_abilities(htech)
+            if AbilityId.RESEARCH_COMBATSHIELD in abilities and \
+            self.can_afford(AbilityId.RESEARCH_COMBATSHIELD):
+                await self.do(htech(AbilityId.RESEARCH_COMBATSHIELD))
+            elif AbilityId.RESEARCH_CONCUSSIVESHELLS in abilities and \
+            self.can_afford(AbilityId.RESEARCH_CONCUSSIVESHELLS):
+                await self.do(htech(AbilityId.RESEARCH_CONCUSSIVESHELLS))
 
     async def defend(self):
         global defense
@@ -294,4 +323,4 @@ run_game(maps.get("Abyssal Reef LE"), [
     #Human(Race.Terran,fullscreen=True), #If one wants to play against the bot.
     Bot(Race.Terran, TestBot2(), fullscreen=False),
     Computer(Race.Zerg, Difficulty.Easy) #Lets get min functionality against Easy before testing against Medium
-], realtime=True)
+], realtime=False)
