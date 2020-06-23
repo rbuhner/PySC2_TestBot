@@ -49,6 +49,7 @@ class TestBot2(sc2.BotAI):
 
         await self.build_offense()
         await self.train_offense()
+        await self.build_defense()
         await self.upgrade()
         await self.defend()
         await self.attack()
@@ -204,13 +205,13 @@ class TestBot2(sc2.BotAI):
                 continue
 
             if add_on:
-                print("Possible:",possible)
+                #print("Possible:",possible)
                 possible_aopositions = [Point2(p).offset([-2,1]).to2 for p in possible]
                 res = await self._client.query_building_placement( \
                 self._game_data.units[UnitTypeId.SUPPLYDEPOT.value].creation_ability, possible_aopositions)
-                print("AoPos:", possible_aopositions, " Res:", res)
+                #print("AoPos:", possible_aopositions, " Res:", res)
                 adjPossible = [p for r, p in zip(res, possible_aopositions) if r == ActionResult.Success]
-                print("AdjPos:", adjPossible)
+                #print("AdjPos:", adjPossible)
                 if not adjPossible:
                     continue
                 else:
@@ -252,9 +253,18 @@ class TestBot2(sc2.BotAI):
 
 
     async def build_defense(self):
-        for townhall in self.units(COMMANDCENTER).ready.idle:
-            if self.can_afford(ORBITALCOMMAND):
-                await self.do(townhall.build(ORBITALCOMMAND))
+        if self.units(BARRACKS):
+            for townhall in self.units(COMMANDCENTER).ready.idle:
+                print("Attempting Command->Orbital Morph")
+                if self.can_afford(ORBITALCOMMAND):
+                    await self.do(townhall(AbilityId.UPGRADETOORBITAL_ORBITALCOMMAND))
+            for townhall in self.units(ORBITALCOMMAND).ready:
+                if not self.units(MULE).ready:
+                    if self.can_cast(townhall, AbilityId.CALLDOWNMULE_CALLDOWNMULE):
+                        self.do(townhall(AbilityId.CALLDOWNMULE_CALLDOWNMULE))
+                elif not self.is_visible(self.enemy_start_locations[0]):
+                    if self.can_cast(townhall, AbilityId.SCANNERSWEEP_SCAN):
+                        self.do(townhall(AbilityId.SCANNERSWEEP_SCAN),self.enemy_start_locations[0])
 
     async def train_offense(self):
         global lAddon
@@ -322,8 +332,10 @@ class TestBot2(sc2.BotAI):
     async def defend(self):
         global defense
 
-        if defense and len(self.known_enemy_units)>0:
-            target = random.choice(self.known_enemy_units).position
+        if defense and len(self.known_enemy_units)>0 and \
+        not self.game_info.map_center.is_closer_than(self.current_node.distance_to_closest(self.known_enemy_units), \
+        self.current_node):
+            target = self.current_node.closest(self.known_enemy_units).position
             for unit in (units for units in defense if len(units.orders)<1):
                 await self.do(unit.attack(target))
 
