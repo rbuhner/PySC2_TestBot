@@ -84,7 +84,7 @@ class TestBot2(sc2.BotAI):
         aharvest=0
         iharvest=0
         townhalls = self.units(COMMANDCENTER).ready|self.units(ORBITALCOMMAND).ready
-        
+
         for townhall in townhalls:
             aharvest+=townhall.assigned_harvesters
             iharvest+=townhall.ideal_harvesters
@@ -188,13 +188,18 @@ class TestBot2(sc2.BotAI):
                 #All coords from bottomleft x/y
                 nsao = await self._client.query_building_placement(
                     self._game_data.units[SUPPLYDEPOT.value].creation_ability,
-                    [Point2([4,0]).offset(near).to2]
+                    [Point2([3,0]).offset(near).to2]
                 )
-                nsls = await self._client.query_building_placement(
+                nslls = await self._client.query_building_placement(
                     self._game_data.units[SUPPLYDEPOT.value].creation_ability,
                     [Point2([-2,0]).offset(near).to2]
                 )
-                if nsao[0] == ActionResult.Success and nsls[0] == ActionResult.Success:
+                nslus = await self._client.query_building_placement(
+                    self._game_data.units[SUPPLYDEPOT.value].creation_ability,
+                    [Point2([-2,1]).offset(near).to2]
+                )
+                if nsao[0] == ActionResult.Success and \
+                nslls[0] == ActionResult.Success and nslus[0] == ActionResult.Success:
                     #print(near)
                     return near
             else:
@@ -216,15 +221,20 @@ class TestBot2(sc2.BotAI):
 
             if add_on:
                 #All coords from bottomleft x/y
-                possible_ao = [Point2(p).offset([4,0]).to2 for p in possible]
+                possible_ao = [Point2(p).offset([3,0]).to2 for p in possible]
                 rao = await self._client.query_building_placement( \
                 self._game_data.units[SUPPLYDEPOT.value].creation_ability, possible_ao)
                 aoPossible = [p for r, p in zip(rao, possible) if r == ActionResult.Success]
 
-                possible_ls = [Point2(p).offset([-2,0]).to2 for p in aoPossible]
-                rls = await self._client.query_building_placement( \
-                self._game_data.units[SUPPLYDEPOT.value].creation_ability, possible_ls)
-                adjPossible = [p for r, p in zip(rls, aoPossible) if r == ActionResult.Success]
+                possible_lls = [Point2(p).offset([-2,0]).to2 for p in aoPossible]
+                rlls = await self._client.query_building_placement( \
+                self._game_data.units[SUPPLYDEPOT.value].creation_ability, possible_lls)
+                llsPossible = [p for r, p in zip(rlls, aoPossible) if r == ActionResult.Success]
+
+                possible_lus = [Point2(p).offset([-2,1]).to2 for p in llsPossible]
+                rlus = await self._client.query_building_placement( \
+                self._game_data.units[SUPPLYDEPOT.value].creation_ability, possible_lus)
+                adjPossible = [p for r, p in zip(rlus, llsPossible) if r == ActionResult.Success]
                 if not adjPossible:
                     continue
                 else:
@@ -398,6 +408,16 @@ class TestBot2(sc2.BotAI):
                 defense.remove(unit)
                 staging.append(unit)
                 await self.do(unit.attack(staging_loc))
+            print("D>S Defense:", len(defense), "|Staging:", len(staging),
+            "|Offense:", len(offense), "|ForceMin:", forceMin)
+        # OPTIMIZE: Need to move Defense back to defensive position, if not already at that pos...
+        """
+        elif defense:
+            for unit in defense:
+                if len(unit.orders)<1:
+                    await self.do(unit.attack(self.next_node))
+        """
+
 
         #Staging force until units are grouped together
         # OPTIMIZE: Need to organify the max radius of staging->offense
@@ -411,6 +431,8 @@ class TestBot2(sc2.BotAI):
                     staging.remove(unit)
                     offense.append(unit)
                     await self.do(unit.attack(target))
+                print("S>O Defense:", len(defense), "|Staging:", len(staging),
+                "|Offense:", len(offense), "|ForceMin:", forceMin)
             else:
                 for unit in staging:
                     await self.do(unit.attack(staging_loc))
@@ -422,6 +444,8 @@ class TestBot2(sc2.BotAI):
                     offense.remove(unit)
                     defense.append(unit)
                     await self.do(unit.move(self.next_node))
+                print("O>D Defense:", len(defense), "|Staging:", len(staging),
+                "|Offense:", len(offense), "|ForceMin:", forceMin)
             #If part of/offense loses/kills target, retarget
             else:
                 target = self.find_enemy(self.state)
