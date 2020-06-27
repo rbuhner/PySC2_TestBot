@@ -385,15 +385,16 @@ class TestBot2(sc2.BotAI):
 
         #ARMORY Research queuing
         for advtech in self.units(ARMORY).ready.idle:
-            if not self.already_pending_upgrade(UpgradeId.TERRANVEHICLEANDSHIPARMORSLEVEL1) and \
-            self.can_afford(UpgradeId.TERRANVEHICLEANDSHIPARMORSLEVEL1):
-                await self.do(advtech.research(UpgradeId.TERRANVEHICLEANDSHIPARMORSLEVEL1))
-            elif not self.already_pending_upgrade(UpgradeId.TERRANVEHICLEANDSHIPARMORSLEVEL2) and \
-            self.can_afford(UpgradeId.TERRANVEHICLEANDSHIPARMORSLEVEL2):
-                await self.do(advtech.research(UpgradeId.TERRANVEHICLEANDSHIPARMORSLEVEL2))
-            elif not self.already_pending_upgrade(UpgradeId.TERRANVEHICLEANDSHIPARMORSLEVEL2) and \
-            self.can_afford(UpgradeId.TERRANVEHICLEANDSHIPARMORSLEVEL2):
-                await self.do(advtech.research(UpgradeId.TERRANVEHICLEANDSHIPARMORSLEVEL2))
+            abilities = await self.get_available_abilities(advtech)
+            if AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL1 in abilities and \
+            self.can_afford(AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL1):
+                await self.do(advtech(AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL1))
+            elif AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL2 in abilities and \
+            self.can_afford(AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL2):
+                await self.do(advtech(AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL2))
+            elif AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL3 in abilities and \
+            self.can_afford(AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL3):
+                await self.do(advtech(AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL3))
 
     async def defend(self):
         global defense
@@ -467,7 +468,7 @@ class TestBot2(sc2.BotAI):
                 staging = []
                 for unit in offense:
                     if unit in self.units(MEDIVAC) and unit.is_idle:
-                        await self.do(unit.attack(random.choice(offense)))
+                        await self.do(unit.attack(random.choice(offense).position))
                     elif unit.is_idle:
                         await self.do(unit.attack(target))
                 print("S>O Defense:", len(defense), "|Staging:", len(staging),
@@ -493,7 +494,9 @@ class TestBot2(sc2.BotAI):
             else:
                 target = self.find_enemy(self.state)
                 for unit in offense:
-                    if unit.is_idle:
+                    if unit in self.units(MEDIVAC) and unit.is_idle:
+                        await self.do(unit.attack(random.choice(offense).position))
+                    elif unit.is_idle:
                         await self.do(unit.attack(target))
 
 #--- Run Game ---#
