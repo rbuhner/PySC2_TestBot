@@ -14,6 +14,8 @@ from sc2.data import ActionResult, Alert
 from sc2.position import Point2, Point3
 from sc2.unit import Unit
 
+from testbot import TestBot
+
 import random, time
 from typing import Optional, Union # mypy type checking
 
@@ -32,6 +34,10 @@ class TestBot2(sc2.BotAI):
         halltech = []
         hallreac = []
 
+        global repairing, under_construction
+        repairing = []
+        under_construction = []
+
     async def call_once(self):
         global staging_loc, rallyPoint
 
@@ -47,7 +53,7 @@ class TestBot2(sc2.BotAI):
             await self.call_once()
 
         #Step Cycle
-        await self.distribute_workers() # OPTIMIZE: Imported function, apparently not the best?
+        await self.better_worker_distribute()
         await self.build_workers()
         await self.build_supply()
         await self.build_gas()
@@ -76,13 +82,46 @@ class TestBot2(sc2.BotAI):
         return self.cached_main_base_ramp
         """
 
+    #@Override
+    async def on_building_construction_started(self, unit: Unit):
+        global under_construction
+        if Unit.is_structure:
+            under_construction.append(Unit)
+    #@Override
+    async def on_building_construction_complete(self, unit: Unit):
+        global under_construction
+        if Unit.is_structure:
+            under_construction.remove(Unit)
+
+    # OPTIMIZE: Part imported function, apparently not the best?
+    #           \ Noted rarely will have an SCV carrying min go to gas/etc
+    async def better_worker_distribute(self):
+        """ Slight opt of distribute_workers(), which contains repair code. """
+        global repairing, under_construction
+
+        #See if any damaged buildings are done being repaired, or destroyed
+        if repairing:
+            repairing = list(building for building in self.units if \
+            building in repairing and building.health_percentage<1)
+
+        #First check for damaged buildings (Top Priority)
+        for damaged in (building for building in self.units if building.is_structure and \
+        building.health_percentage<1 and building not in repairing and building not in under_construction):
+            worker = self.select_build_worker(pos=damaged.position)
+            if worker:
+                repairing.append(damaged)
+                await self.do(worker.repair(damaged))
+
+        #Second normal distribute_workers for now.
+        await self.distribute_workers()
+
     async def build_workers(self):
         """ Builds units iff townhall has resources to utilize. """
         aharvest=0
         iharvest=0
-        townhalls = self.units(COMMANDCENTER).ready|self.units(ORBITALCOMMAND).ready
+        #townhalls = self.units(COMMANDCENTER).ready|self.units(ORBITALCOMMAND).ready
 
-        for townhall in townhalls:
+        for townhall in self.townhalls:
             aharvest+=townhall.assigned_harvesters
             iharvest+=townhall.ideal_harvesters
         for ref in self.units(REFINERY).ready:
@@ -196,7 +235,7 @@ class TestBot2(sc2.BotAI):
                 nslls = await self.can_place(SUPPLYDEPOT,Point2(lls_p).offset(near).to2)
                 nslus = await self.can_place(SUPPLYDEPOT,Point2(lus_p).offset(near).to2)
                 if nsao and nslls and nslus:
-                    print("Near:", near)
+                    #print("Near:", near)
                     return near
             else:
                 return near
@@ -235,17 +274,17 @@ class TestBot2(sc2.BotAI):
 
             if random_alternative:
                 pos = random.choice(possible)
-                pao = Point2(pos).offset(ao_p).to2
-                rao = await self.can_place(SUPPLYDEPOT, pao)
-                plls = Point2(pos).offset(lls_p).to2
-                rlls = await self.can_place(SUPPLYDEPOT, plls)
-                plus = Point2(pos).offset(lus_p).to2
-                rlus = await self.can_place(SUPPLYDEPOT, plus)
-                print("RPos:",pos,"|",pao,"-",rao,"|",plls,"-",rlls,"|",plus,"-",rlus)
+                #pao = Point2(pos).offset(ao_p).to2
+                #rao = await self.can_place(SUPPLYDEPOT, pao)
+                #plls = Point2(pos).offset(lls_p).to2
+                #rlls = await self.can_place(SUPPLYDEPOT, plls)
+                #plus = Point2(pos).offset(lus_p).to2
+                #rlus = await self.can_place(SUPPLYDEPOT, plus)
+                #print("RPos:",pos,"|",pao,"-",rao,"|",plls,"-",rlls,"|",plus,"-",rlus)
                 return pos
             else:
                 pos = min(possible, key=lambda p: p.distance_to(near))
-                print("MPos:", pos)
+                #print("MPos:", pos)
                 return pos
         return None
 
@@ -420,7 +459,6 @@ class TestBot2(sc2.BotAI):
         return self.units(MARINE) + self.units(MARAUDER) + self.units(MEDIVAC)
 
     # OPTIMIZE: Would rather marines kept at top of map_ramps, need further research...
-    # OPTIMIZE: Need rally points and the army to gather at them.
     async def attack(self):
         """ Covers military AI, from the moment unit is recruited into defense,
          into staging to offense and retreat, and cycle. """
@@ -502,6 +540,7 @@ class TestBot2(sc2.BotAI):
 #--- Run Game ---#
 run_game(maps.get("Abyssal Reef LE"), [
     #Human(Race.Terran,fullscreen=True), #If one wants to play against the bot.
-    Bot(Race.Terran, TestBot2(), fullscreen=False),
-    Computer(Race.Zerg, Difficulty.Hard) #Lets get min functionality against Easy before testing against Medium
+    #Bot(Race.Protoss, TestBot()),
+    Bot(Race.Terran, TestBot2()),
+    Computer(Race.Protoss, Difficulty.Hard)
 ], realtime=True)
