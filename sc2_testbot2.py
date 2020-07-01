@@ -14,7 +14,7 @@ from sc2.data import ActionResult, Alert
 from sc2.position import Point2, Point3
 from sc2.unit import Unit
 
-from testbot import TestBot
+#from testbot import TestBot
 
 import random, time
 from typing import Optional, Union # mypy type checking
@@ -34,8 +34,8 @@ class TestBot2(sc2.BotAI):
         halltech = []
         hallreac = []
 
-        global repairing, under_construction
-        repairing = []
+        global under_repair, under_construction
+        under_repair = []
         under_construction = []
 
     async def call_once(self):
@@ -82,37 +82,64 @@ class TestBot2(sc2.BotAI):
         return self.cached_main_base_ramp
         """
 
-    #@Override
-    async def on_building_construction_started(self, unit: Unit):
-        global under_construction
-        if Unit.is_structure:
-            under_construction.append(Unit)
-    #@Override
-    async def on_building_construction_complete(self, unit: Unit):
-        global under_construction
-        if Unit.is_structure:
-            under_construction.remove(Unit)
+    def in_build_radius(self, building: Unit, worker: Unit) -> bool:
+        return worker.position._distance_squared(building.position) <= (building.radius**2)+0.5
+
+    def is_within(self, item: object, mlist: list) -> bool:
+        """ Assumes list in 2 dimensional. """
+        assert isinstance(mlist, list)
+        assert len(mlist[0]) == 2
+
+        for x in mlist:
+            if object in x: return True
+        return False
 
     # OPTIMIZE: Part imported function, apparently not the best?
     #           \ Noted rarely will have an SCV carrying min go to gas/etc
     async def better_worker_distribute(self):
-        """ Slight opt of distribute_workers(), which contains repair code. """
-        global repairing, under_construction
+        """ Slight upgrade of distribute_workers(), which contains repair code. """
+        global under_repair, under_construction
 
-        #See if any damaged buildings are done being repaired, or destroyed
-        if repairing:
-            repairing = list(building for building in self.units if \
-            building in repairing and building.health_percentage<1)
+        # Assesment of building conditions and workers constructing.
+        tuc=list(building for building in self.units if building.is_structure and \
+        building.build_progress<1)
+        wuc=list(worker for worker in self.workers if worker.is_constructing_scv)
+        tr=list(building for building in self.units if building.is_structure and \
+        building.health_percentage<1 and building not in tuc)
 
-        #First check for damaged buildings (Top Priority)
-        for damaged in (building for building in self.units if building.is_structure and \
-        building.health_percentage<1 and building not in repairing and building not in under_construction):
-            worker = self.select_build_worker(pos=damaged.position)
-            if worker:
-                repairing.append(damaged)
-                await self.do(worker.repair(damaged))
+        # Checking for new/completed buildings, and those buildings who's SCV has died
+        for building in under_construction:
+            if building[0] not in tuc:
+                under_construction.remove(building)
+            elif building[1] not in self.workers:
+                worker = self.select_build_worker(pos=building[0].position)
+                if worker:
+                    under_construction[under_construction.index(building)][1] = worker
+                    await self.do(worker.smart(building[0]))
+        for building in tuc:
+            if not under_construction or not self.is_within(building, under_construction):
+                for worker in wuc:
+                    if self.in_build_radius(building, worker):
+                        under_construction.append([building, worker])
+                        break
 
-        #Second normal distribute_workers for now.
+        # Checking for damaged/repaired buildings, and those who's SCV has died
+        for building in under_repair:
+            if building[0] not in tr:
+                under_repair.remove(building)
+            elif building[1] not in self.workers:
+                worker = self.select_build_worker(pos=building[0].position)
+                if worker:
+                    under_repair[under_repai.index(building)][1] = worker
+                    await self.do(worker.repair(building[0]))
+        for building in tr:
+            if not self.is_within(building, under_repair):
+                worker = self.select_build_worker(pos=building.position)
+                if worker:
+                    under_repair.append([building, worker])
+                    await self.do(worker.repair(building))
+
+        #If all's well, distribute_workers as normal.
         await self.distribute_workers()
 
     async def build_workers(self):
@@ -447,7 +474,7 @@ class TestBot2(sc2.BotAI):
             for unit in (units for units in self.getAllUnits() if units in defense and units.is_idle):
                 await self.do(unit.attack(target))
 
-    def find_enemy(self, state):
+    def find_enemy(self, state) -> Point2:
         if len(self.known_enemy_units)>0:
             return random.choice(self.known_enemy_units).position
         elif len(self.known_enemy_structures)>0:
@@ -542,5 +569,5 @@ run_game(maps.get("Abyssal Reef LE"), [
     #Human(Race.Terran,fullscreen=True), #If one wants to play against the bot.
     #Bot(Race.Protoss, TestBot()),
     Bot(Race.Terran, TestBot2()),
-    Computer(Race.Protoss, Difficulty.Hard)
+    Computer(Race.Random, Difficulty.Hard)
 ], realtime=True)
