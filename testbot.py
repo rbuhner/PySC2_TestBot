@@ -120,6 +120,6 @@ class TestBot(sc2.BotAI):
 
 run_game(maps.get("Abyssal Reef LE"), [
     #Human(Race.Terran,fullscreen=True),
-    Bot(Race.Protoss, TestBot(),fullscreen=False),
+    Bot(Race.Protoss, TestBot()),
     Computer(Race.Terran, Difficulty.Medium)
 ], realtime=True)

@@ -66,7 +66,7 @@ class TestBot2(sc2.BotAI):
         await self.defend()
         await self.attack()
 
-        time.sleep(0.1)
+        #time.sleep(0.1)
 
         # TODO: Incorporate ramp logic in ground attacks, to prevent bottlenecking.
         """
@@ -115,7 +115,7 @@ class TestBot2(sc2.BotAI):
                 worker = self.select_build_worker(pos=building[0].position)
                 if worker:
                     under_construction[under_construction.index(building)][1] = worker
-                    await self.do(worker.smart(building[0]))
+                    await self.do(worker(AbilityId.SMART, building[0]))
         for building in tuc:
             if not under_construction or not self.is_within(building, under_construction):
                 for worker in wuc:
