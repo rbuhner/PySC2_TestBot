@@ -14,6 +14,8 @@ from sc2.data import ActionResult, Alert
 from sc2.position import Point2, Point3
 from sc2.unit import Unit
 
+#from testbot import TestBot
+
 import random, time
 from typing import Optional, Union # mypy type checking
 
@@ -21,19 +23,29 @@ class TestBot2(sc2.BotAI):
     def __init__(self):
         self.CALL_ONCE = True
 
-        global defense, offense, staging
+        global defense, offense, staging, retreat
         defense = []
         offense = []
         staging = []
+        retreat = []
 
         global lAddon, halltech, hallreac
         lAddon = []
         halltech = []
         hallreac = []
 
+        global under_repair, under_construction
+        under_repair = []
+        under_construction = []
+
     async def call_once(self):
+        global staging_loc, rallyPoint
+
         self.next_node = await self.get_next_expansion()
         self.current_node = self.start_location
+
+        rallyPoint = await self.find_placement(SUPPLYDEPOT, near=self.next_node)
+        staging_loc = await self.find_placement(SUPPLYDEPOT, near=self.game_info.map_center)
 
     async def on_step(self, iteration):
         if self.CALL_ONCE:
@@ -41,7 +53,7 @@ class TestBot2(sc2.BotAI):
             await self.call_once()
 
         #Step Cycle
-        await self.distribute_workers() # OPTIMIZE: Imported function, apparently not the best?
+        await self.better_worker_distribute()
         await self.build_workers()
         await self.build_supply()
         await self.build_gas()
@@ -54,7 +66,7 @@ class TestBot2(sc2.BotAI):
         await self.defend()
         await self.attack()
 
-        time.sleep(0.1)
+        #time.sleep(0.1)
 
         # TODO: Incorporate ramp logic in ground attacks, to prevent bottlenecking.
         """
@@ -70,38 +82,90 @@ class TestBot2(sc2.BotAI):
         return self.cached_main_base_ramp
         """
 
-        # TODO: self.upgrade function/ality
+    def in_build_radius(self, building: Unit, worker: Unit) -> bool:
+        return worker.position._distance_squared(building.position) <= (building.radius**2)+0.5
 
-    # OPTIMIZE: Need to account for a total pool of workers,
-    #               so we're not building extra when surplus workers are incoming.
+    def is_within(self, item: object, mlist: list) -> bool:
+        """ Assumes list in 2 dimensional. """
+        assert isinstance(mlist, list)
+        assert len(mlist[0]) == 2
+
+        for x in mlist:
+            if object in x: return True
+        return False
+
+    # OPTIMIZE: Part imported function, apparently not the best?
+    #           \ Noted rarely will have an SCV carrying min go to gas/etc
+    async def better_worker_distribute(self):
+        """ Slight upgrade of distribute_workers(), which contains repair code. """
+        global under_repair, under_construction
+
+        # Assesment of building conditions and workers constructing.
+        tuc=list(building for building in self.units if building.is_structure and \
+        building.build_progress<1)
+        wuc=list(worker for worker in self.workers if worker.is_constructing_scv)
+        tr=list(building for building in self.units if building.is_structure and \
+        building.health_percentage<1 and building not in tuc)
+
+        # Checking for new/completed buildings, and those buildings who's SCV has died
+        for building in under_construction:
+            if building[0] not in tuc:
+                under_construction.remove(building)
+            elif building[1] not in self.workers:
+                worker = self.select_build_worker(pos=building[0].position)
+                if worker:
+                    under_construction[under_construction.index(building)][1] = worker
+                    await self.do(worker(AbilityId.SMART, building[0]))
+        for building in tuc:
+            if not under_construction or not self.is_within(building, under_construction):
+                for worker in wuc:
+                    if self.in_build_radius(building, worker):
+                        under_construction.append([building, worker])
+                        break
+
+        # Checking for damaged/repaired buildings, and those who's SCV has died
+        for building in under_repair:
+            if building[0] not in tr:
+                under_repair.remove(building)
+            elif building[1] not in self.workers:
+                worker = self.select_build_worker(pos=building[0].position)
+                if worker:
+                    under_repair[under_repai.index(building)][1] = worker
+                    await self.do(worker.repair(building[0]))
+        for building in tr:
+            if not self.is_within(building, under_repair):
+                worker = self.select_build_worker(pos=building.position)
+                if worker:
+                    under_repair.append([building, worker])
+                    await self.do(worker.repair(building))
+
+        #If all's well, distribute_workers as normal.
+        await self.distribute_workers()
+
     async def build_workers(self):
         """ Builds units iff townhall has resources to utilize. """
-        # OPTIMIZE: Break assigned/ideal_harvesters from can_afford, and search for nearby townhalls that need workers.
         aharvest=0
         iharvest=0
+        #townhalls = self.units(COMMANDCENTER).ready|self.units(ORBITALCOMMAND).ready
 
-        """
-        for townhall in self.units(COMMANDCENTER).ready.idle:
-            if self.can_afford(SCV):
-                if townhall.assigned_harvesters < townhall.ideal_harvesters:
-                    await self.do(townhall.train(SCV))
-                else:
-                    for ref in self.units(REFINERY).closer_than(15.0, townhall):
-                        if ref.assigned_harvesters < ref.ideal_harvesters:
-                            await self.do(townhall.train(SCV))
-                            break
-        """
-
-        townhalls = self.units(COMMANDCENTER).ready|self.units(ORBITALCOMMAND).ready
-        for townhall in townhalls:
+        for townhall in self.townhalls:
             aharvest+=townhall.assigned_harvesters
             iharvest+=townhall.ideal_harvesters
         for ref in self.units(REFINERY).ready:
             aharvest+=ref.assigned_harvesters
             iharvest+=ref.ideal_harvesters
 
-        for townhall in townhalls:
-            if len(townhall.orders)<1 and aharvest<iharvest and self.can_afford(SCV):
+        for townhall in self.units(COMMANDCENTER).ready.idle:
+            if self.units(BARRACKS).ready:
+                if aharvest+8<iharvest and self.can_afford(SCV):
+                    aharvest+=1
+                    await self.do(townhall.train(SCV))
+            else:
+                if aharvest<iharvest and self.can_afford(SCV):
+                    aharvest+=1
+                    await self.do(townhall.train(SCV))
+        for townhall in self.units(ORBITALCOMMAND).ready.idle:
+            if aharvest<iharvest and self.can_afford(SCV):
                 aharvest+=1
                 await self.do(townhall.train(SCV))
 
@@ -141,51 +205,64 @@ class TestBot2(sc2.BotAI):
         # OPTIMIZE: Organify supply_left, likely through neural-like behavior.
         global depots
         depots = self.units(SUPPLYDEPOT).ready | self.units(SUPPLYDEPOTLOWERED).ready
+        townhall = self.units(COMMANDCENTER).ready | self.units(ORBITALCOMMAND).ready
 
-        if self.supply_left<2+2*(self.time/60) and self.already_pending(SUPPLYDEPOT)<2 and (self.supply_used+self.supply_left)<200:
-            townhall = self.units(COMMANDCENTER).ready
-            if townhall and self.can_afford(SUPPLYDEPOT):
-                await self.build(SUPPLYDEPOT, near=townhall.first)
+        if townhall and self.supply_left<2+2*(self.time/60) and not self.already_pending(SUPPLYDEPOT) and \
+        (self.supply_used+self.supply_left)<200 and self.can_afford(SUPPLYDEPOT):
+            await self.build(SUPPLYDEPOT, near=townhall.first)
 
         for unit in self.units(SUPPLYDEPOT).ready:
             await self.do(unit(AbilityId.MORPH_SUPPLYDEPOT_LOWER))
 
-    # OPTIMIZE: Tends to build WAY too many REFINERYs on a single geyser...
+    # OPTIMIZE: Limited to just overbuilding on a geyer by one now...
     async def build_gas(self):
-        if self.can_afford(REFINERY) and self.units(REFINERY).amount+1<(self.time/30):
+        if self.units(REFINERY).amount+1<(self.time/30):
             for townhall in self.units(COMMANDCENTER).ready:
                 for geyser in self.state.vespene_geyser.closer_than(15.0, townhall):
                     worker = self.select_build_worker(geyser.position)
                     if worker and not self.units(REFINERY).closer_than(1.0, geyser).exists and \
-                    self.already_pending(REFINERY)<2:
+                    self.already_pending(REFINERY)<2 and self.can_afford(REFINERY):
                         await self.do(worker.build(REFINERY, geyser))
 
-    # OPTIMIZE: For some reason waited until it had enough for two comms,
-    #               then put both down on the same point?
     async def expand(self):
+        """ Every 3 minutes, waits until it can afford a Command Center, then expands to the next site. """
+        global rallyPoint
+
         if self.units(COMMANDCENTER).amount<(self.time/180) and self.can_afford(COMMANDCENTER) and \
         not self.already_pending(COMMANDCENTER):
-            await self.expand_now()
             self.current_node = self.next_node
+            await self.expand_now()
             self.next_node = await self.get_next_expansion()
-            if self.current_node == self.next_node: print("Current node and Next node returned same point/object.")
+            if self.current_node == self.next_node:
+                print("Current node and Next node returned same point/object.")
+            rallyPoint = await self.find_placement(SUPPLYDEPOT, near=self.next_node)
 
     async def better_placement(self, building: UnitTypeId, near: Union[Unit, Point2, Point3], \
-    max_distance: int=20, random_alternative: bool=True, placement_step: int=2, add_on: bool=False) \
+    max_distance: int=20, random_alternative: bool=True, placement_step: int=2, add_on: bool=True) \
     -> Optional[Point2]:
-        """An attempt at a placement finder that keeps space for addons."""
+        """ An attempt at a placement finder that keeps space for addons. """
         assert isinstance(building, (AbilityId, UnitTypeId))
         assert isinstance(near, Point2)
         if isinstance(building, UnitTypeId):
             building = self._game_data.units[building.value].creation_ability
         else: #AbilityId
             building = self._game_data.abilties[building.value]
+        ao = self._game_data.units[UnitTypeId.SUPPLYDEPOT.value].creation_ability
+        b_r = 1.5
+        ao_r = 1
+        ao_p = [b_r+ao_r,ao_r-b_r]
+        lls_p = [-(b_r+ao_r),ao_r-b_r]
+        lus_p = [-(b_r+ao_r),b_r-ao_r]
 
-        ns = await self._client.query_building_placement(building, [near])
-        if ns[0] == ActionResult.Success:
+        ns = await self.can_place(building, near)
+        if ns:
             if add_on:
-                nsao = await self._client.query_building_placement(BARRACKSTECHLAB, [Point2([2,1]).offset(near).to2])
-                if nsao[0] == ActionResult.Success:
+                #All coords from bottomleft x/y
+                nsao = await self.can_place(SUPPLYDEPOT,Point2(ao_p).offset(near).to2)
+                nslls = await self.can_place(SUPPLYDEPOT,Point2(lls_p).offset(near).to2)
+                nslus = await self.can_place(SUPPLYDEPOT,Point2(lus_p).offset(near).to2)
+                if nsao and nslls and nslus:
+                    #print("Near:", near)
                     return near
             else:
                 return near
@@ -205,44 +282,68 @@ class TestBot2(sc2.BotAI):
                 continue
 
             if add_on:
-                #print("Possible:",possible)
-                possible_aopositions = [Point2(p).offset([-2,1]).to2 for p in possible]
-                res = await self._client.query_building_placement( \
-                self._game_data.units[UnitTypeId.SUPPLYDEPOT.value].creation_ability, possible_aopositions)
-                #print("AoPos:", possible_aopositions, " Res:", res)
-                adjPossible = [p for r, p in zip(res, possible_aopositions) if r == ActionResult.Success]
-                #print("AdjPos:", adjPossible)
+                #All coords from bottomleft x/y
+                possible_ao = [Point2(p).offset(ao_p).to2 for p in possible]
+                rao = await self._client.query_building_placement(ao, possible_ao)
+                aoPossible = [p for r, p in zip(rao, possible) if r == ActionResult.Success]
+
+                possible_lls = [Point2(p).offset(lls_p).to2 for p in aoPossible]
+                rlls = await self._client.query_building_placement(ao, possible_lls)
+                llsPossible = [p for r, p in zip(rlls, aoPossible) if r == ActionResult.Success]
+
+                possible_lus = [Point2(p).offset(lus_p).to2 for p in llsPossible]
+                rlus = await self._client.query_building_placement(ao, possible_lus)
+                adjPossible = [p for r, p in zip(rlus, llsPossible) if r == ActionResult.Success]
                 if not adjPossible:
                     continue
                 else:
                     possible=adjPossible
 
             if random_alternative:
-                return random.choice(possible)
+                pos = random.choice(possible)
+                #pao = Point2(pos).offset(ao_p).to2
+                #rao = await self.can_place(SUPPLYDEPOT, pao)
+                #plls = Point2(pos).offset(lls_p).to2
+                #rlls = await self.can_place(SUPPLYDEPOT, plls)
+                #plus = Point2(pos).offset(lus_p).to2
+                #rlus = await self.can_place(SUPPLYDEPOT, plus)
+                #print("RPos:",pos,"|",pao,"-",rao,"|",plls,"-",rlls,"|",plus,"-",rlus)
+                return pos
             else:
-                return min(possible, key=lambda p: p.distance_to(near))
+                pos = min(possible, key=lambda p: p.distance_to(near))
+                #print("MPos:", pos)
+                return pos
         return None
 
     async def build_offense(self):
         if depots:
             if not self.units(BARRACKS).ready:
                 if not self.already_pending(BARRACKS) and self.can_afford(BARRACKS):
-                    await self.build(BARRACKS, self.main_base_ramp.barracks_correct_placement)
+                    build_loc = await self.better_placement(BARRACKS, \
+                    near=self.main_base_ramp.barracks_correct_placement)
+                    if build_loc:
+                        await self.build(BARRACKS, build_loc)
             elif not self.units(ENGINEERINGBAY).ready and not self.already_pending(ENGINEERINGBAY) and \
             self.can_afford(ENGINEERINGBAY):
                 await self.build(ENGINEERINGBAY, near=self.start_location.towards(
                     self.game_info.map_center, distance=5
                 ), placement_step=1)
-            elif self.units(BARRACKS).amount<3 and self.units(BARRACKS).ready.amount<1+self.time/180:
+            elif self.units(BARRACKS).ready.amount<self.time/150:
                 if not self.already_pending(BARRACKS) and self.can_afford(BARRACKS):
-                    build_loc = await self.better_placement(BARRACKS, \
-                    near=self.main_base_ramp.barracks_correct_placement, add_on=True)
+                    if self.current_node == self.start_location:
+                        build_loc = await self.better_placement(BARRACKS, \
+                        near=self.main_base_ramp.barracks_correct_placement)
+                    else:
+                        build_loc = await self.better_placement(BARRACKS, \
+                        near=self.current_node.towards(
+                            self.game_info.map_center, distance=5
+                        ), add_on=True)
                     if build_loc:
                         await self.build(BARRACKS, build_loc)
             elif not self.units(FACTORY).ready:
                 if not self.already_pending(FACTORY) and self.can_afford(FACTORY):
                     build_loc = await self.better_placement(FACTORY, \
-                    near=self.main_base_ramp.barracks_correct_placement, add_on=True)
+                    near=self.main_base_ramp.barracks_correct_placement)
                     if build_loc:
                         await self.build(FACTORY, build_loc)
             elif not self.units(ARMORY).ready and not self.already_pending(ARMORY) and \
@@ -250,25 +351,40 @@ class TestBot2(sc2.BotAI):
                 await self.build(ARMORY, near=self.start_location.towards(
                     self.game_info.map_center, distance=5
                 ), placement_step=1)
-
+            elif not self.units(STARPORT).ready and not self.already_pending(STARPORT) and \
+            self.can_afford(STARPORT):
+                build_loc = await self.better_placement(STARPORT, \
+                near=self.main_base_ramp.barracks_correct_placement)
+                if build_loc:
+                    await self.build(STARPORT, build_loc)
 
     async def build_defense(self):
-        if self.units(BARRACKS):
+        if self.units(BARRACKS).ready:
             for townhall in self.units(COMMANDCENTER).ready.idle:
-                print("Attempting Command->Orbital Morph")
                 if self.can_afford(ORBITALCOMMAND):
                     await self.do(townhall(AbilityId.UPGRADETOORBITAL_ORBITALCOMMAND))
             for townhall in self.units(ORBITALCOMMAND).ready:
-                if not self.units(MULE).ready:
-                    if self.can_cast(townhall, AbilityId.CALLDOWNMULE_CALLDOWNMULE):
-                        self.do(townhall(AbilityId.CALLDOWNMULE_CALLDOWNMULE))
+                abilities = await self.get_available_abilities(townhall)
+                # OPTIMIZE: Should have MULE per ORBITALCOMMAND for increased mineral gain...
+                if not self.units(UnitTypeId.MULE):
+                    if AbilityId.CALLDOWNMULE_CALLDOWNMULE in abilities:
+                        await self.do(townhall(
+                            AbilityId.CALLDOWNMULE_CALLDOWNMULE,
+                            self.state.mineral_field.closest_to(townhall)
+                        ))
+                # OPTIMIZE: Should scan not just base but around enemy base to find
+                #           expansions, enemy army/composition, etc...
                 elif not self.is_visible(self.enemy_start_locations[0]):
-                    if self.can_cast(townhall, AbilityId.SCANNERSWEEP_SCAN):
-                        self.do(townhall(AbilityId.SCANNERSWEEP_SCAN),self.enemy_start_locations[0])
+                    if AbilityId.SCANNERSWEEP_SCAN in abilities:
+                        await self.do(townhall(
+                            AbilityId.SCANNERSWEEP_SCAN,
+                            self.enemy_start_locations[0]
+                        ))
 
     async def train_offense(self):
         global lAddon
         global halltech, hallreac
+        forceMin = 4+(self.time/30)
 
         if self.alert(Alert.AddOnComplete):
             lAddon.pop(0)
@@ -282,18 +398,23 @@ class TestBot2(sc2.BotAI):
                 if hall.add_on_tag == 0 and hall in self.units(BARRACKS).ready.idle \
                 and self.can_afford(BARRACKSTECHLAB):
                     if len(halltech)<1:
+                        lAddon.append(hall)
                         await self.do(hall.build(BARRACKSTECHLAB))
                         halltech.append(hall)
-                    else:
+                    elif self.can_afford(BARRACKSREACTOR):
+                        lAddon.append(hall)
                         await self.do(hall.build(BARRACKSREACTOR))
                         hallreac.append(hall)
-                    lAddon.append(hall)
                 elif hall in hallreac:
                     if len(hall.orders)<2 and not hall in lAddon and self.can_afford(MARINE):
                         await self.do(hall.train(MARINE))
                 elif hall in halltech:
                     if len(hall.orders)<1 and not hall in lAddon and self.can_afford(MARAUDER):
                         await self.do(hall.train(MARAUDER))
+
+            for port in self.units(STARPORT).ready.idle:
+                if self.units(MEDIVAC).amount<forceMin/5 and self.can_afford(MEDIVAC):
+                    await self.do(port.train(MEDIVAC))
 
     async def upgrade(self):
         #ENGINEERINGBAY Research queuing
@@ -328,18 +449,32 @@ class TestBot2(sc2.BotAI):
             self.can_afford(AbilityId.RESEARCH_CONCUSSIVESHELLS):
                 await self.do(htech(AbilityId.RESEARCH_CONCUSSIVESHELLS))
 
-    # OPTIMIZE: Need this code to trigger only if enemy near bases...
+        #ARMORY Research queuing
+        for advtech in self.units(ARMORY).ready.idle:
+            abilities = await self.get_available_abilities(advtech)
+            if AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL1 in abilities and \
+            self.can_afford(AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL1):
+                await self.do(advtech(AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL1))
+            elif AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL2 in abilities and \
+            self.can_afford(AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL2):
+                await self.do(advtech(AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL2))
+            elif AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL3 in abilities and \
+            self.can_afford(AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL3):
+                await self.do(advtech(AbilityId.ARMORYRESEARCH_TERRANVEHICLEANDSHIPPLATINGLEVEL3))
+
     async def defend(self):
         global defense
 
         if defense and len(self.known_enemy_units)>0 and \
-        not self.game_info.map_center.is_closer_than(self.current_node.distance_to_closest(self.known_enemy_units), \
-        self.current_node):
+        not self.game_info.map_center.is_closer_than(
+            self.current_node.distance_to_closest(self.known_enemy_units),
+            self.current_node
+        ):
             target = self.current_node.closest(self.known_enemy_units).position
-            for unit in (units for units in defense if len(units.orders)<1):
+            for unit in (units for units in self.getAllUnits() if units in defense and units.is_idle):
                 await self.do(unit.attack(target))
 
-    def find_enemy(self, state):
+    def find_enemy(self, state) -> Point2:
         if len(self.known_enemy_units)>0:
             return random.choice(self.known_enemy_units).position
         elif len(self.known_enemy_structures)>0:
@@ -347,52 +482,92 @@ class TestBot2(sc2.BotAI):
         else:
             return self.enemy_start_locations[0]
 
+    def getAllUnits(self):
+        return self.units(MARINE) + self.units(MARAUDER) + self.units(MEDIVAC)
+
     # OPTIMIZE: Would rather marines kept at top of map_ramps, need further research...
-    # OPTIMIZE: Need rally points and the army to gather at them, current code is flaky at best.
-    # OPTIMIZE: Doing some really janky things with the marines picked to go etc...
     async def attack(self):
-        global defense, offense, staging
-        forceMin = 6+(self.time/30)
+        """ Covers military AI, from the moment unit is recruited into defense,
+         into staging to offense and retreat, and cycle. """
+        global defense, offense, staging, retreat
+        global staging_loc, isStaging
+        forceMin = 4+(self.time/30)
 
         #Add all new units to defense force first
-        for unit in (units for units in self.units(MARINE)|self.units(MARAUDER) if \
-        not units in defense and not units in offense and not units in staging):
+        for unit in (units for units in self.getAllUnits() if not units in defense and \
+        not units in offense and not units in staging and not units in retreat):
             defense.append(unit)
             await self.do(unit.move(self.next_node))
 
+        if defense: defense = list(units for units in self.getAllUnits() if units in defense)
+        if staging: staging = list(units for units in self.getAllUnits() if units in staging)
+        if offense: offense = list(units for units in self.getAllUnits() if units in offense)
+
         #If defense force is big enough to attack, attack
         if len(defense)>forceMin:
+            staging += defense
+            defense = []
+            for unit in staging:
+                await self.do(unit.attack(staging_loc))
+            print("D>S Defense:", len(defense), "|Staging:", len(staging),
+            "|Offense:", len(offense), "|ForceMin:", forceMin)
+        elif defense:
             for unit in defense:
-                defense.remove(unit)
-                staging.append(unit)
-                await self.do(unit.attack(self.game_info.map_center))
+                if staging and len(staging)<forceMin:
+                    staging += defense
+                    defense = []
+                    await self.do(unit.attack(staging_loc))
+                elif unit.is_idle and unit.position.distance_to(self.next_node)>5:
+                    await self.do(unit.attack(self.next_node))
 
         #Staging force until units are grouped together
         # OPTIMIZE: Need to organify the max radius of staging->offense
-        if staging:
-            p=[]
-            for u in staging:
-                p.append(u.position)
-            if Point2.center(p).distance_to_furthest(staging)<7:
+        if len(staging)>=forceMin:
+            #p=[]
+            #for unit in (units for units in self.getAllUnits() if units in staging):
+                #p.append(unit.position)
+            p = list(units.position for units in staging)
+            if Point2.center(p).distance_to_furthest(p)<8:
                 target=self.find_enemy(self.state)
+                offense += staging
+                staging = []
+                for unit in offense:
+                    if unit in self.units(MEDIVAC) and unit.is_idle:
+                        await self.do(unit.attack(random.choice(offense).position))
+                    elif unit.is_idle:
+                        await self.do(unit.attack(target))
+                print("S>O Defense:", len(defense), "|Staging:", len(staging),
+                "|Offense:", len(offense), "|ForceMin:", forceMin)
+            else:
                 for unit in staging:
-                    staging.remove(unit)
-                    offense.append(unit)
-                    await self.do(unit.attack(target))
+                    if unit.is_idle and unit.position.distance_to(staging_loc)>5:
+                        await self.do(unit.attack(staging_loc))
 
-        #Retreat if offense too weak
-        if offense and len(offense)<(forceMin/3):
-            for unit in offense:
-                offense.remove(unit)
-                defense.append(unit)
-                await self.do(unit.move(self.next_node))
+        if offense:
+            #Retreat if offense too weak
+            if len(offense)<forceMin/4:
+                retreat = offense
+                offense = []
+                for unit in retreat:
+                    await self.do(unit.move(self.next_node))
 
-        #if defense or staging or offense:
-        #    print("Defense:", len(defense), "|Staging:", len(staging), "|Offense:", len(offense))
+                defense += retreat
+                retreat = []
+                print("O>D Defense:", len(defense), "|Staging:", len(staging),
+                "|Offense:", len(offense), "|ForceMin:", forceMin)
+            #If part of/offense loses/kills target, retarget
+            else:
+                target = self.find_enemy(self.state)
+                for unit in offense:
+                    if unit in self.units(MEDIVAC) and unit.is_idle:
+                        await self.do(unit.attack(random.choice(offense).position))
+                    elif unit.is_idle:
+                        await self.do(unit.attack(target))
 
 #--- Run Game ---#
 run_game(maps.get("Abyssal Reef LE"), [
     #Human(Race.Terran,fullscreen=True), #If one wants to play against the bot.
-    Bot(Race.Terran, TestBot2(), fullscreen=False),
-    Computer(Race.Zerg, Difficulty.Medium) #Lets get min functionality against Easy before testing against Medium
+    #Bot(Race.Protoss, TestBot()),
+    Bot(Race.Terran, TestBot2()),
+    Computer(Race.Random, Difficulty.Hard)
 ], realtime=True)
